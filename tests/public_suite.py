@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ---------------------------------------------------------------------------
-# HW3 - Web Servers and Synchronization : PUBLIC self-check tests
+# NetPulse public self-check tests
 #
 # This is a SUBSET of the test suite, provided so you can sanity-check your
 # server before submitting. Passing all of these does NOT guarantee full
@@ -14,8 +14,8 @@
 import time, os, http.client, random, threading, re, socket, sys
 
 import toolspath
-from testing import Test, BuildTest
-from testing.test import Failure
+from test import Test, Failure
+from build import BuildTest
 
 # Test Registry
 test_list = []
@@ -412,14 +412,14 @@ class UdpStats(ServerTest):
 # ---------------------------------------------------------------------------
 def _main():
     import argparse, multiprocessing, queue as _queue
-    from testing.test import run_test, TestResult
+    from test import run_test, TestResult
 
     try:
         multiprocessing.set_start_method("fork", force=True)
     except (ValueError, RuntimeError):
         pass
 
-    ap = argparse.ArgumentParser(description="HW3 public self-check tests")
+    ap = argparse.ArgumentParser(description="NetPulse public self-check tests")
     ap.add_argument("-p", "--project-path", default=".", help="Project directory to test")
     ap.add_argument("-b", "--no-build", action="store_false", dest="build", default=True,
                     help="Skip the 'make' build step")

@@ -1,4 +1,4 @@
-#include "segel.h"
+#include "net_wrappers.h"
 #include "request.h"
 #include "log.h"
 
@@ -40,11 +40,11 @@ void requestError(int fd, char *cause, char *errnum, char *shortmsg, char *longm
     char buf[MAXLINE], body[MAXBUF];
 
     // Safely build the body content
-    sprintf(body, "<html><title>OS-HW3 Error</title>");
+    sprintf(body, "<html><title>NetPulse Error</title>");
     sprintf(body + strlen(body), "<body bgcolor=\"fffff\">\r\n");
     sprintf(body + strlen(body), "%s: %s\r\n", errnum, shortmsg);
     sprintf(body + strlen(body), "<p>%s: %s\r\n", longmsg, cause);
-    sprintf(body + strlen(body), "<hr>OS-HW3 Web Server\r\n");
+    sprintf(body + strlen(body), "<hr>NetPulse HTTP Server\r\n");
 
     // Build the header
     sprintf(buf, "HTTP/1.0 %s %s\r\n", errnum, shortmsg);
@@ -159,13 +159,13 @@ void requestHandle(int fd, time_stats tm_stats, threads_stats t_stats, server_lo
         is_static = requestParseURI(uri, filename, cgiargs);
 
         if (stat(filename, &sbuf) < 0) {
-            requestError(fd, filename, "404", "Not found", "OS-HW3 Server could not find this file", tm_stats, t_stats);
+            requestError(fd, filename, "404", "Not found", "NetPulse Server could not find this file", tm_stats, t_stats);
             return;
         }
 
         if (is_static) {
             if (!(S_ISREG(sbuf.st_mode)) || !(S_IRUSR & sbuf.st_mode)) {
-                requestError(fd, filename, "403", "Forbidden", "OS-HW3 Server could not read this file", tm_stats, t_stats);
+                requestError(fd, filename, "403", "Forbidden", "NetPulse Server could not read this file", tm_stats, t_stats);
                 return;
             }
             t_stats->stat_req++;
@@ -175,20 +175,20 @@ void requestHandle(int fd, time_stats tm_stats, threads_stats t_stats, server_lo
 
             // Fixed Content-Length format string and sprintf overlap
             sprintf(resp_headers, "HTTP/1.0 200 OK\r\n");
-            sprintf(resp_headers + strlen(resp_headers), "Server: OS-HW3 Web Server\r\n");
+            sprintf(resp_headers + strlen(resp_headers), "Server: NetPulse HTTP Server\r\n");
             sprintf(resp_headers + strlen(resp_headers), "Content-Length: %d\r\n", body_len);
             sprintf(resp_headers + strlen(resp_headers), "Content-Type: %s\r\n", filetype);
 
         } else {
             if (!(S_ISREG(sbuf.st_mode)) || !(S_IXUSR & sbuf.st_mode)) {
-                requestError(fd, filename, "403", "Forbidden", "OS-HW3 Server could not run this CGI program", tm_stats, t_stats);
+                requestError(fd, filename, "403", "Forbidden", "NetPulse Server could not run this CGI program", tm_stats, t_stats);
                 return;
             }
             t_stats->dynm_req++;
             body_content = requestPrepareDynamic(filename, cgiargs, &body_len);
 
             sprintf(resp_headers, "HTTP/1.0 200 OK\r\n");
-            sprintf(resp_headers + strlen(resp_headers), "Server: OS-HW3 Web Server\r\n");
+            sprintf(resp_headers + strlen(resp_headers), "Server: NetPulse HTTP Server\r\n");
         }
         char log_buf[MAXBUF];
         log_buf[0] = '\0';
@@ -199,11 +199,11 @@ void requestHandle(int fd, time_stats tm_stats, threads_stats t_stats, server_lo
         body_len = get_log(log, (char**)&body_content, &tm_stats);
 
         sprintf(resp_headers, "HTTP/1.0 200 OK\r\n");
-        sprintf(resp_headers + strlen(resp_headers), "Server: OS-HW3 Web Server\r\n");
+        sprintf(resp_headers + strlen(resp_headers), "Server: NetPulse HTTP Server\r\n");
         sprintf(resp_headers + strlen(resp_headers), "Content-Length: %d\r\n", body_len);
         sprintf(resp_headers + strlen(resp_headers), "Content-Type: text/plain\r\n");
     } else {
-        requestError(fd, method, "501", "Not Implemented", "OS-HW3 Server does not implement this method", tm_stats, t_stats);
+        requestError(fd, method, "501", "Not Implemented", "NetPulse Server does not implement this method", tm_stats, t_stats);
         return;
     }
     // --- SEND ---

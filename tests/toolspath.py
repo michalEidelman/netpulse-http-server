@@ -6,4 +6,4 @@ import sys, os, inspect
 thisDir = os.path.dirname(inspect.getfile(inspect.currentframe()))
 toolsDir = os.path.abspath(os.path.join(thisDir, '..', '..', 'tools'))
 sys.path.insert(0, toolsDir)
-sys.path.insert(0, './testing')
+sys.path.insert(0, './tests')

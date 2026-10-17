@@ -1,315 +1,359 @@
-#include "segel.h"
+#include "net_wrappers.h"
 #include "request.h"
 #include "log.h"
-#include <pthread.h>
 
-//
-// server.c: A very, very simple web server
-//
-// To run:
-//  ./server <portnum (above 2000)>
-//
-// Repeatedly handles HTTP requests sent to this port number.
-// Most of the work is done within routines written in request.c
-//
+#include <poll.h>
+#include <time.h>
+
 typedef struct {
     int fd;
-    struct timeval arrival_time;  // recorded by master at Accept()
+    struct timeval arrival_time;
 } queue_entry;
 
-// struct for the queue
 typedef struct {
-    queue_entry* pending;
+    queue_entry *pending;
     int head;
     int tail;
     int count;
     int active;
     int max_size;
+    int shutting_down;
     pthread_mutex_t mutex;
     pthread_cond_t not_full;
     pthread_cond_t not_empty;
 } request_queue;
 
-// struct for udp
-struct udp_node{
+struct udp_node {
     struct sockaddr_in client_addr;
-    struct udp_node* next;
+    struct udp_node *next;
 };
 
-struct mailbox {
-    struct udp_node* head;
-    struct udp_node* tail;
+typedef struct {
+    struct udp_node *head;
+    struct udp_node *tail;
     int count;
     pthread_mutex_t lock;
-};
+} mailbox;
 
-void initialize_queue(request_queue *q, int size) {
-    q->pending = (queue_entry *)malloc(size * sizeof(queue_entry));
-    if (q->pending == NULL) {
-        fprintf(stderr, "Failed to allocate queue\n");
-        exit(1);
-    }
+typedef struct {
+    request_queue *queue;
+    server_log log;
+    threads_stats stats;
+    mailbox *mailbox;
+    int udp_fd;
+} worker_args;
+
+static volatile sig_atomic_t g_stop_requested = 0;
+
+static void handle_sigint(int signo) {
+    (void)signo;
+    g_stop_requested = 1;
+}
+
+static void install_signal_handlers(void) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = handle_sigint;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGINT, &sa, NULL);
+}
+
+static void initialize_queue(request_queue *q, int size) {
+    q->pending = (queue_entry *)Malloc(size * sizeof(queue_entry));
     q->active = 0;
     q->max_size = size;
     q->head = 0;
     q->tail = 0;
     q->count = 0;
+    q->shutting_down = 0;
     Pthread_mutex_init(&q->mutex, NULL);
     Pthread_cond_init(&q->not_full, NULL);
     Pthread_cond_init(&q->not_empty, NULL);
 }
 
-void enqueue(request_queue *q, queue_entry entry) {
+static void enqueue(request_queue *q, queue_entry entry) {
     q->pending[q->tail] = entry;
     q->tail = (q->tail + 1) % q->max_size;
     q->count++;
 }
 
-queue_entry dequeue(request_queue *q) {
+static queue_entry dequeue(request_queue *q) {
     queue_entry entry = q->pending[q->head];
     q->head = (q->head + 1) % q->max_size;
     q->count--;
     return entry;
 }
 
-typedef struct {
-    request_queue *q;
-    server_log log;
-    threads_stats t_stats;
-    struct mailbox* curr_mailbox;
-    int UDPfd;
-
-} worker_args;
-
-// Parses command-line arguments
-void getargs(int* tcp_portnum, int* udp_portnum, int* threads,int* queue_size, float*
-debug_sleep_time, int argc, char *argv[])
-{
-    if (argc < 6) {
-        fprintf(stderr, "Usage: %s [tcp_portnum] [udp_portnum] [threads] [queue_size][debug_sleep_time]\n", argv[0]);
-        exit(1);
-    }
-    *tcp_portnum = atoi(argv[1]);
-    *udp_portnum = atoi(argv[2]);
-    *threads = atoi(argv[3]);
-    *queue_size = atoi(argv[4]);
-    *debug_sleep_time = atof(argv[5]);
-    if (*tcp_portnum <= 1024) {
-        fprintf(stderr, "Error: tcp_portnum must be above 1024\n");
-        exit(1);
-    }
-    if (*udp_portnum <= 1024) {
-        fprintf(stderr, "Error: udp_portnum must be above 1024\n");
-        exit(1);
-    }
-    if (*udp_portnum == *tcp_portnum) {
-        fprintf(stderr, "Error: udp_portnum must be different from tcp_portnum\n");
-        exit(1);
-    }
-    if (*threads <= 0) {
-        fprintf(stderr, "Error: threads must be a positive integer\n");
-        exit(1);
-    }
-    if (*queue_size <= 0) {
-        fprintf(stderr, "Error: queue_size must be a positive integer\n");
-        exit(1);
-    }
-}
-
-void pushUDP(struct mailbox* mb, struct sockaddr_in client_addr, request_queue* queue) {
-    struct udp_node* udp_node = (struct udp_node*)malloc(sizeof(struct udp_node));
-    udp_node->client_addr =client_addr;
-    udp_node->next = NULL;
+static void mailbox_push(mailbox *mb, struct sockaddr_in client_addr) {
+    struct udp_node *node = (struct udp_node *)Malloc(sizeof(struct udp_node));
+    node->client_addr = client_addr;
+    node->next = NULL;
 
     Pthread_mutex_lock(&mb->lock);
     if (mb->head == NULL) {
-        mb->head = udp_node;
-        mb->tail = udp_node;
-    }
-    else {
-        mb->tail->next = udp_node;
-        mb->tail = udp_node;
+        mb->head = node;
+        mb->tail = node;
+    } else {
+        mb->tail->next = node;
+        mb->tail = node;
     }
     mb->count++;
     Pthread_mutex_unlock(&mb->lock);
-    Pthread_cond_broadcast(&queue->not_empty);
-
 }
 
-int popUDP(struct mailbox* mb, struct sockaddr_in* out_addr) {
+static int mailbox_pop(mailbox *mb, struct sockaddr_in *out_addr) {
     Pthread_mutex_lock(&mb->lock);
     if (mb->count == 0) {
         Pthread_mutex_unlock(&mb->lock);
         return 0;
     }
-    struct udp_node* temp = mb->head;
-    *out_addr = temp->client_addr;
-    mb->head = mb->head->next;
+
+    struct udp_node *node = mb->head;
+    *out_addr = node->client_addr;
+    mb->head = node->next;
     if (mb->head == NULL) {
         mb->tail = NULL;
     }
     mb->count--;
     Pthread_mutex_unlock(&mb->lock);
-    free(temp);
+
+    free(node);
     return 1;
 }
 
+static void mailbox_destroy(mailbox *mb) {
+    struct sockaddr_in unused;
+    while (mailbox_pop(mb, &unused)) {
+    }
+    Pthread_mutex_destroy(&mb->lock);
+}
 
-// HW3 — Task 1: Initialize the thread pool and request queue.
-// This server currently handles all requests in the main thread.
-void* worker_thread(void* args) {
-    worker_args *wargs = (worker_args *)args;
-    struct sockaddr_in udp_client;
+static void parse_args(
+    int *tcp_port,
+    int *udp_port,
+    int *thread_count,
+    int *queue_size,
+    float *debug_sleep,
+    int argc,
+    char *argv[])
+{
+    if (argc != 6) {
+        fprintf(stderr, "Usage: %s [tcp_port] [udp_port] [threads] [queue_size] [debug_sleep_time]\n", argv[0]);
+        exit(1);
+    }
+
+    *tcp_port = atoi(argv[1]);
+    *udp_port = atoi(argv[2]);
+    *thread_count = atoi(argv[3]);
+    *queue_size = atoi(argv[4]);
+    *debug_sleep = atof(argv[5]);
+
+    if (*tcp_port <= 1024 || *udp_port <= 1024 || *thread_count <= 0 || *queue_size <= 0) {
+        fprintf(stderr, "Invalid arguments provided.\n");
+        exit(1);
+    }
+    if (*tcp_port == *udp_port) {
+        fprintf(stderr, "TCP and UDP ports must be different.\n");
+        exit(1);
+    }
+}
+
+static void *worker_thread(void *arg) {
+    worker_args *worker = (worker_args *)arg;
+
     while (1) {
-
-        //check for jobs
-        Pthread_mutex_lock(&(wargs->q->mutex));
-        while (1) {
-            Pthread_mutex_lock(&(wargs->curr_mailbox->lock));
-            int udp_cnt = wargs->curr_mailbox->count;
-            Pthread_mutex_unlock(&(wargs->curr_mailbox->lock));
-            if (wargs->q->count == 0 && udp_cnt == 0) {
-                Pthread_cond_wait(&(wargs->q->not_empty), &(wargs->q->mutex));
-            }
-            else {
-                break;
-            }
-
-        }
-        //UDP part
-        Pthread_mutex_unlock(&(wargs->q->mutex));
-
-        while (popUDP(wargs->curr_mailbox, &udp_client)) {
+        struct sockaddr_in udp_client;
+        while (mailbox_pop(worker->mailbox, &udp_client)) {
             char buf[MAXLINE];
             buf[0] = '\0';
-            append_thread_log(buf, wargs->t_stats);
-            UDP_Write(wargs->UDPfd, &udp_client, buf, strlen(buf));
+            append_thread_log(buf, worker->stats);
+            UDP_Write(worker->udp_fd, &udp_client, buf, (int)strlen(buf));
         }
 
+        Pthread_mutex_lock(&worker->queue->mutex);
+        while (worker->queue->count == 0 && !worker->queue->shutting_down) {
+            struct timespec wake_at;
+            clock_gettime(CLOCK_REALTIME, &wake_at);
+            wake_at.tv_nsec += 200 * 1000 * 1000;
+            if (wake_at.tv_nsec >= 1000 * 1000 * 1000) {
+                wake_at.tv_sec += 1;
+                wake_at.tv_nsec -= 1000 * 1000 * 1000;
+            }
 
-
-        //TCP part
-        Pthread_mutex_lock(&(wargs->q->mutex));
-        while (wargs->q->count == 0) {
-            Pthread_cond_wait(&(wargs->q->not_empty), &(wargs->q->mutex));
+            int wait_rc = pthread_cond_timedwait(&worker->queue->not_empty, &worker->queue->mutex, &wake_at);
+            if (wait_rc == ETIMEDOUT) {
+                break;
+            }
         }
-        queue_entry dequeued = dequeue(wargs->q);
-        wargs->q->active++;
-        Pthread_mutex_unlock(&(wargs->q->mutex));
+
+        if (worker->queue->count == 0) {
+            int should_stop = worker->queue->shutting_down;
+            Pthread_mutex_unlock(&worker->queue->mutex);
+            if (should_stop) {
+                break;
+            }
+            continue;
+        }
+
+        queue_entry job = dequeue(worker->queue);
+        worker->queue->active++;
+        Pthread_mutex_unlock(&worker->queue->mutex);
 
         time_stats tm = {0};
-        tm.task_arrival = dequeued.arrival_time;
+        tm.task_arrival = job.arrival_time;
         gettimeofday(&tm.task_dispatch, NULL);
-        requestHandle(dequeued.fd, tm, wargs->t_stats, wargs->log);
-        Close(dequeued.fd);
 
-        Pthread_mutex_lock(&(wargs->q->mutex));
-        wargs->q->active--;
-        Pthread_cond_signal(&(wargs->q->not_full));
-        Pthread_mutex_unlock(&(wargs->q->mutex));
+        requestHandle(job.fd, tm, worker->stats, worker->log);
+        Close(job.fd);
+
+        Pthread_mutex_lock(&worker->queue->mutex);
+        worker->queue->active--;
+        Pthread_cond_signal(&worker->queue->not_full);
+        Pthread_mutex_unlock(&worker->queue->mutex);
     }
+
     return NULL;
 }
 
+int main(int argc, char *argv[]) {
+    int listen_fd;
+    int udp_fd;
+    int tcp_port;
+    int udp_port;
+    int thread_count;
+    int queue_size;
+    float debug_sleep;
 
+    parse_args(&tcp_port, &udp_port, &thread_count, &queue_size, &debug_sleep, argc, argv);
+    install_signal_handlers();
 
-int main(int argc, char *argv[])
-{
+    server_log log = create_log(debug_sleep);
+    request_queue queue;
+    initialize_queue(&queue, queue_size);
 
-    int listenfd, connfd, clientlen, UDPfd, max_fd;
-    int tcp_portnum, udp_portnum, threads, queue_size;
-    float debug_sleep_time;
-    struct sockaddr_in clientaddr;
+    mailbox *mailboxes = (mailbox *)Malloc(sizeof(mailbox) * thread_count);
+    pthread_t *pool = (pthread_t *)Malloc(sizeof(pthread_t) * thread_count);
+    worker_args **args = (worker_args **)Malloc(sizeof(worker_args *) * thread_count);
 
-    getargs(&tcp_portnum, &udp_portnum, &threads, &queue_size, &debug_sleep_time, argc, argv);
+    for (int i = 0; i < thread_count; i++) {
+        mailboxes[i].head = NULL;
+        mailboxes[i].tail = NULL;
+        mailboxes[i].count = 0;
+        Pthread_mutex_init(&mailboxes[i].lock, NULL);
 
-    server_log log = create_log(debug_sleep_time);
-    struct mailbox* mailbox = (struct mailbox*)malloc(sizeof(struct mailbox)*threads);
-    for (int i=0; i<threads; i++) {
-        mailbox[i].head = NULL;
-        mailbox[i].tail = NULL;
-        mailbox[i].count = 0;
-        Pthread_mutex_init(&mailbox[i].lock, NULL);
+        args[i] = (worker_args *)Malloc(sizeof(worker_args));
+        args[i]->queue = &queue;
+        args[i]->log = log;
+        args[i]->mailbox = &mailboxes[i];
+        args[i]->udp_fd = -1;
+        args[i]->stats = (threads_stats)Malloc(sizeof(struct Threads_stats));
+        args[i]->stats->id = i + 1;
+        args[i]->stats->stat_req = 0;
+        args[i]->stats->dynm_req = 0;
+        args[i]->stats->post_req = 0;
+        args[i]->stats->total_req = 0;
     }
 
-    request_queue q;
-    initialize_queue(&q, queue_size);
-    pthread_t pool[threads];
+    listen_fd = Open_listenfd(tcp_port);
+    udp_fd = UDP_Open(udp_port);
 
-    listenfd = Open_listenfd(tcp_portnum);
-    UDPfd = UDP_Open(udp_portnum);
-
-    for(int i = 0; i < threads; i++) {
-        worker_args *wargs = malloc(sizeof(worker_args));
-        wargs->q = &q;
-        wargs->log = log;
-        wargs->curr_mailbox = &mailbox[i];
-        wargs->UDPfd = UDPfd;
-        wargs->t_stats = malloc(sizeof(struct Threads_stats));
-        wargs->t_stats->id = i + 1;
-        wargs->t_stats->stat_req = 0;
-        wargs->t_stats->dynm_req = 0;
-        wargs->t_stats->post_req = 0;
-        wargs->t_stats->total_req = 0;
-        Pthread_create(&pool[i], NULL, worker_thread, wargs);
+    for (int i = 0; i < thread_count; i++) {
+        args[i]->udp_fd = udp_fd;
+        Pthread_create(&pool[i], NULL, worker_thread, args[i]);
     }
 
+    struct pollfd fds[2];
+    fds[0].fd = listen_fd;
+    fds[0].events = POLLIN;
+    fds[1].fd = udp_fd;
+    fds[1].events = POLLIN;
 
-    fd_set readfds;
-    fd_set tempset;
-    FD_ZERO(&readfds);
-    FD_SET(listenfd, &readfds);
-    FD_SET(UDPfd, &readfds);
-
-    if (listenfd > UDPfd) max_fd = listenfd;
-    else max_fd = UDPfd;
-    max_fd++;
-
-    while (1) {
-        tempset = readfds;
-        Select(max_fd, &tempset,NULL, NULL, NULL);
-
-        //TCP part
-        if (FD_ISSET(listenfd, &tempset)) {
-            clientlen = sizeof(clientaddr);
-            connfd = Accept(listenfd, (SA *)&clientaddr, (socklen_t*) &clientlen);
-            queue_entry entry;
-            entry.fd = connfd;
-            gettimeofday(&entry.arrival_time, NULL);
-            Pthread_mutex_lock(&(q.mutex));
-            while (q.count + q.active == q.max_size) {
-                Pthread_cond_wait(&(q.not_full), &(q.mutex));
+    while (!g_stop_requested) {
+        int ready = poll(fds, 2, 500);
+        if (ready < 0) {
+            if (errno == EINTR) {
+                continue;
             }
-            enqueue(&q, entry);
-            Pthread_cond_signal(&(q.not_empty));
-            Pthread_mutex_unlock(&(q.mutex));
+            break;
+        }
+        if (ready == 0) {
+            continue;
         }
 
-        if (FD_ISSET(UDPfd, &tempset)) {
+        if ((fds[0].revents & POLLIN) != 0) {
+            struct sockaddr_in client_addr;
+            socklen_t client_len = sizeof(client_addr);
+            int conn_fd = Accept(listen_fd, (SA *)&client_addr, &client_len);
+
+            queue_entry entry;
+            entry.fd = conn_fd;
+            gettimeofday(&entry.arrival_time, NULL);
+
+            Pthread_mutex_lock(&queue.mutex);
+            while (!queue.shutting_down && queue.count + queue.active == queue.max_size) {
+                Pthread_cond_wait(&queue.not_full, &queue.mutex);
+            }
+            if (queue.shutting_down) {
+                Pthread_mutex_unlock(&queue.mutex);
+                Close(conn_fd);
+            } else {
+                enqueue(&queue, entry);
+                Pthread_cond_signal(&queue.not_empty);
+                Pthread_mutex_unlock(&queue.mutex);
+            }
+        }
+
+        if ((fds[1].revents & POLLIN) != 0) {
             struct sockaddr_in udp_client_addr;
             char buf[MAXLINE];
-            UDP_Read(UDPfd, &udp_client_addr, buf, sizeof(buf));
+            int n = UDP_Read(udp_fd, &udp_client_addr, buf, sizeof(buf) - 1);
+            if (n <= 0) {
+                continue;
+            }
+            buf[n] = '\0';
             int thread_id = atoi(buf);
-            pushUDP(&mailbox[thread_id-1], udp_client_addr, &q);
-
+            if (thread_id >= 1 && thread_id <= thread_count) {
+                mailbox_push(&mailboxes[thread_id - 1], udp_client_addr);
+                Pthread_mutex_lock(&queue.mutex);
+                Pthread_cond_broadcast(&queue.not_empty);
+                Pthread_mutex_unlock(&queue.mutex);
+            }
         }
-
-
     }
 
+    Pthread_mutex_lock(&queue.mutex);
+    queue.shutting_down = 1;
+    Pthread_cond_broadcast(&queue.not_empty);
+    Pthread_cond_broadcast(&queue.not_full);
+    Pthread_mutex_unlock(&queue.mutex);
 
+    Close(listen_fd);
+    Close(udp_fd);
 
-    // Free thread pool resources
-    for (int i = 0; i < threads; i++) {
+    for (int i = 0; i < thread_count; i++) {
         Pthread_join(pool[i], NULL);
     }
 
-    // Free queue
-    free(q.pending);
-    Pthread_mutex_destroy(&q.mutex);
-    Pthread_cond_destroy(&q.not_full);
-    Pthread_cond_destroy(&q.not_empty);
+    for (int i = 0; i < queue.count; i++) {
+        int idx = (queue.head + i) % queue.max_size;
+        Close(queue.pending[idx].fd);
+    }
 
-    // Clean up the server log before exiting
+    for (int i = 0; i < thread_count; i++) {
+        mailbox_destroy(&mailboxes[i]);
+        free(args[i]->stats);
+        free(args[i]);
+    }
+
+    free(args);
+    free(pool);
+    free(mailboxes);
+
+    free(queue.pending);
+    Pthread_mutex_destroy(&queue.mutex);
+    Pthread_cond_destroy(&queue.not_full);
+    Pthread_cond_destroy(&queue.not_empty);
+
     destroy_log(log);
+    return 0;
 }

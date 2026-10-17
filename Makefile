@@ -1,34 +1,36 @@
-#
-# To compile, type "make" or make "all"
-# To remove files, type "make clean"
-#
+CC := gcc
+CFLAGS := -g -Wall -Wextra -pthread -Iinclude
+LDFLAGS := -pthread
 
-OBJS = server.o request.o segel.o client.o log.o
-TARGET = server
+SRC_DIR := src
+BIN_DIR := bin
+PUBLIC_DIR := public
 
-CC = gcc
-CFLAGS = -g -Wall -pthread
+SERVER_SRCS := $(SRC_DIR)/server.c $(SRC_DIR)/request.c $(SRC_DIR)/net_wrappers.c $(SRC_DIR)/log.c
+CLIENT_SRCS := $(SRC_DIR)/client.c $(SRC_DIR)/net_wrappers.c
+CGI_SRCS := $(SRC_DIR)/output.c $(SRC_DIR)/net_wrappers.c
 
-LIBS = -pthread
+SERVER_TARGET := server
+CLIENT_TARGET := client
+CGI_TARGET := output.cgi
 
-.SUFFIXES: .c .o
+.PHONY: all clean
 
-all: server client output.cgi
-	-mkdir -p public
-	-cp output.cgi favicon.ico home.html public
+all: $(SERVER_TARGET) $(CLIENT_TARGET) $(CGI_TARGET) prepare-public
 
-server: server.o request.o segel.o log.o
-	$(CC) $(CFLAGS) -o server server.o request.o segel.o log.o $(LIBS)
+$(SERVER_TARGET): $(SERVER_SRCS)
+	$(CC) $(CFLAGS) -o $@ $(SERVER_SRCS) $(LDFLAGS)
 
-client: client.o segel.o
-	$(CC) $(CFLAGS) -o client client.o segel.o
+$(CLIENT_TARGET): $(CLIENT_SRCS)
+	$(CC) $(CFLAGS) -o $@ $(CLIENT_SRCS) $(LDFLAGS)
 
-output.cgi: output.c
-	$(CC) $(CFLAGS) -o output.cgi output.c
+$(CGI_TARGET): $(CGI_SRCS)
+	$(CC) $(CFLAGS) -o $@ $(CGI_SRCS) $(LDFLAGS)
 
-.c.o:
-	$(CC) $(CFLAGS) -o $@ -c $<
+prepare-public: $(CGI_TARGET)
+	@mkdir -p $(PUBLIC_DIR)
+	@cp $(CGI_TARGET) favicon.ico home.html $(PUBLIC_DIR)
 
 clean:
-	-rm -f $(OBJS) server client output.cgi
-	-rm -rf public
+	@rm -f $(SERVER_TARGET) $(CLIENT_TARGET) $(CGI_TARGET)
+	@rm -rf $(PUBLIC_DIR)

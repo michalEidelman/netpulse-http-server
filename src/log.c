@@ -3,7 +3,7 @@
 #include <pthread.h>
 
 #include "log.h"
-#include "segel.h"
+#include "net_wrappers.h"
 #include "request.h"
 
 // Node for linked list
