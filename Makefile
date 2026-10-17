@@ -29,7 +29,8 @@ $(CGI_TARGET): $(CGI_SRCS)
 
 prepare-public: $(CGI_TARGET)
 	@mkdir -p $(PUBLIC_DIR)
-	@cp $(CGI_TARGET) favicon.ico home.html $(PUBLIC_DIR)
+	@cp $(CGI_TARGET) home.html $(PUBLIC_DIR)
+	@if [ -f favicon.ico ]; then cp favicon.ico $(PUBLIC_DIR); fi
 
 clean:
 	@rm -f $(SERVER_TARGET) $(CLIENT_TARGET) $(CGI_TARGET)

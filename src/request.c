@@ -174,10 +174,10 @@ void requestHandle(int fd, time_stats tm_stats, threads_stats t_stats, server_lo
             body_content = requestPrepareStatic(filename, body_len);
 
             // Fixed Content-Length format string and sprintf overlap
-            sprintf(resp_headers, "HTTP/1.0 200 OK\r\n");
-            sprintf(resp_headers + strlen(resp_headers), "Server: NetPulse HTTP Server\r\n");
-            sprintf(resp_headers + strlen(resp_headers), "Content-Length: %d\r\n", body_len);
-            sprintf(resp_headers + strlen(resp_headers), "Content-Type: %s\r\n", filetype);
+            int offset = snprintf(resp_headers, sizeof(resp_headers), "HTTP/1.0 200 OK\r\n");
+            offset += snprintf(resp_headers + offset, sizeof(resp_headers) - offset, "Server: NetPulse HTTP Server\r\n");
+            offset += snprintf(resp_headers + offset, sizeof(resp_headers) - offset, "Content-Length: %d\r\n", body_len);
+            snprintf(resp_headers + offset, sizeof(resp_headers) - offset, "Content-Type: %s\r\n", filetype);
 
         } else {
             if (!(S_ISREG(sbuf.st_mode)) || !(S_IXUSR & sbuf.st_mode)) {
@@ -187,8 +187,8 @@ void requestHandle(int fd, time_stats tm_stats, threads_stats t_stats, server_lo
             t_stats->dynm_req++;
             body_content = requestPrepareDynamic(filename, cgiargs, &body_len);
 
-            sprintf(resp_headers, "HTTP/1.0 200 OK\r\n");
-            sprintf(resp_headers + strlen(resp_headers), "Server: NetPulse HTTP Server\r\n");
+            int offset = snprintf(resp_headers, sizeof(resp_headers), "HTTP/1.0 200 OK\r\n");
+            snprintf(resp_headers + offset, sizeof(resp_headers) - offset, "Server: NetPulse HTTP Server\r\n");
         }
         char log_buf[MAXBUF];
         log_buf[0] = '\0';
@@ -198,10 +198,10 @@ void requestHandle(int fd, time_stats tm_stats, threads_stats t_stats, server_lo
         t_stats->post_req++;
         body_len = get_log(log, (char**)&body_content, &tm_stats);
 
-        sprintf(resp_headers, "HTTP/1.0 200 OK\r\n");
-        sprintf(resp_headers + strlen(resp_headers), "Server: NetPulse HTTP Server\r\n");
-        sprintf(resp_headers + strlen(resp_headers), "Content-Length: %d\r\n", body_len);
-        sprintf(resp_headers + strlen(resp_headers), "Content-Type: text/plain\r\n");
+        int offset = snprintf(resp_headers, sizeof(resp_headers), "HTTP/1.0 200 OK\r\n");
+        offset += snprintf(resp_headers + offset, sizeof(resp_headers) - offset, "Server: NetPulse HTTP Server\r\n");
+        offset += snprintf(resp_headers + offset, sizeof(resp_headers) - offset, "Content-Length: %d\r\n", body_len);
+        snprintf(resp_headers + offset, sizeof(resp_headers) - offset, "Content-Type: text/plain\r\n");
     } else {
         requestError(fd, method, "501", "Not Implemented", "NetPulse Server does not implement this method", tm_stats, t_stats);
         return;

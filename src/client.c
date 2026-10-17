@@ -25,8 +25,8 @@ void clientSend(int fd, char *filename, char* method)
     Gethostname(hostname, MAXLINE); // Get the client's hostname
 
     // Form the HTTP request line and headers
-    sprintf(buf, "%s %s HTTP/1.1\n", method, filename);
-    sprintf(buf, "%shost: %s\n\r\n", buf, hostname);
+    int offset = snprintf(buf, sizeof(buf), "%s %s HTTP/1.1\r\n", method, filename);
+    snprintf(buf + offset, sizeof(buf) - offset, "host: %s\r\n\r\n", hostname);
 
     printf("Request:\n%s\n", buf); // Display the request for debugging
 
