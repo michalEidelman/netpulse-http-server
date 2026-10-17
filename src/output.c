@@ -1,4 +1,4 @@
-#include "segel.h"
+#include "net_wrappers.h"
 #include <sys/time.h>
 #include <assert.h>
 #include <unistd.h>
@@ -36,6 +36,8 @@ double Time_GetSeconds() {
 
 int main(int argc, char *argv[])
 {
+  (void)argc;
+  (void)argv;
   char content[MAXBUF];
 
   getargs();
@@ -45,9 +47,10 @@ int main(int argc, char *argv[])
   double t2 = Time_GetSeconds();
 
   /* Make the response body */
-  sprintf(content, "<p>Welcome to the CGI program</p>\r\n");
-  sprintf(content, "%s<p>My only purpose is to waste time on the server!</p>\r\n", content);
-  sprintf(content, "%s<p>I spun for %.2f seconds</p>\r\n", content, t2 - t1);
+  int offset = snprintf(content, sizeof(content), "<p>Welcome to the CGI program</p>\r\n");
+  offset += snprintf(content + offset, sizeof(content) - offset,
+                     "<p>My only purpose is to waste time on the server!</p>\r\n");
+  snprintf(content + offset, sizeof(content) - offset, "<p>I spun for %.2f seconds</p>\r\n", t2 - t1);
   
   /* Generate the HTTP response */
   printf("Content-length: %lu\r\n", strlen(content));
@@ -57,4 +60,3 @@ int main(int argc, char *argv[])
 
   exit(0);
 }
-

@@ -1,5 +1,5 @@
 import subprocess, os, glob, shutil
-from testing.test import Test
+from test import Test
 
 
 class BuildTest(Test):

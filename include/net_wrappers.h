@@ -1,5 +1,5 @@
-#ifndef __CSAPP_H__
-#define __CSAPP_H__
+#ifndef NET_WRAPPERS_H
+#define NET_WRAPPERS_H
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -179,4 +179,4 @@ void Pthread_create(pthread_t *newthread, const pthread_attr_t *attr,
 /* malloc Wrapper */
 void *Malloc(size_t size);
 
-#endif /* __CSAPP_H__ */
+#endif /* NET_WRAPPERS_H */

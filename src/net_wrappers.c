@@ -1,4 +1,4 @@
-#include "segel.h"
+#include "net_wrappers.h"
 
 /************************** 
  * Error-handling functions
